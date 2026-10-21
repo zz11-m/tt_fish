@@ -46,10 +46,53 @@ class SettlementTests(unittest.TestCase):
             obs,_ = self.detector.detect(cv2.imdecode(buf,cv2.IMREAD_COLOR))
             self.assertEqual((obs.state,obs.variant),("RESULT","claim"),size)
 
-    def test_both_record_colors(self):
-        for variant in ("blue","purple"):
-            obs,_ = self.detector.detect(make_frame("RESULT",variant))
-            self.assertEqual((obs.state,obs.variant),("RESULT","record"))
+    def test_record_colors(self):
+        for variant in ("blue","purple","gold"):
+            with self.subTest(variant=variant):
+                obs,_ = self.detector.detect(make_frame("RESULT",variant))
+                self.assertEqual((obs.state,obs.variant),("RESULT","record"))
+
+    def test_record_colors_survive_resizing_and_jpeg(self):
+        for variant in ("blue","purple","gold"):
+            for size in ((270,480),(560,997),(720,1280)):
+                with self.subTest(variant=variant,size=size):
+                    frame = cv2.resize(make_frame("RESULT",variant),size)
+                    _,buf = cv2.imencode(".jpg",frame,[cv2.IMWRITE_JPEG_QUALITY,85])
+                    obs,_ = self.detector.detect(cv2.imdecode(buf,cv2.IMREAD_COLOR))
+                    self.assertEqual((obs.state,obs.variant),("RESULT","record"))
+
+    def test_gold_record_requires_weight_panel_and_dim_background(self):
+        cases = {
+            "missing_weight": (slice(350,405),slice(85,140),(35,200,255)),
+            "missing_panel": (slice(180,350),slice(10,326),(30,30,30)),
+            "bright_background": (slice(475,542),slice(125,215),(240,240,240)),
+        }
+        for name,(rows,cols,color) in cases.items():
+            with self.subTest(case=name):
+                frame = make_frame("RESULT","gold")
+                frame[rows,cols] = color
+                obs,_ = self.detector.detect(frame)
+                self.assertNotEqual(obs.state,"RESULT")
+
+    def test_gold_record_waits_retries_and_returns_to_fishing(self):
+        c = Controller(dict(DEFAULTS,continuous_fishing=True))
+        result,_ = self.detector.detect(make_frame("RESULT","gold"))
+        idle,_ = self.detector.detect(make_frame("IDLE"))
+        self.assertIsNone(c.step(result,0).action)
+        self.assertIsNone(c.step(result,.1).action)
+        self.assertIsNone(c.step(result,3).action)
+        decision = c.step(result,3.1)
+        self.assertEqual(decision.action,"CLOSE")
+        c.commit(decision.action,3.1)
+        due = c.next_result_press_at
+        self.assertIsNone(c.step(result,due-.01).action)
+        decision = c.step(result,due)
+        self.assertEqual(decision.action,"CLOSE")
+        c.commit(decision.action,due)
+        self.assertIsNone(c.step(idle,due+.1).action)
+        self.assertIsNone(c.step(idle,due+.2).action)
+        self.assertEqual(c.step(idle,due+.7).action,"CAST")
+        self.assertEqual(c.result_count,1)
 
     def test_documented_crop_example_is_recognized(self):
         frame = read_image(ROOT/"docs/images/crop-example.png")[58:710,23:389]

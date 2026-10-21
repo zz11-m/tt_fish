@@ -115,7 +115,10 @@ class Detector:
         panel = hsv[356:387, 88:253]
         panel_purple = float(np.mean((panel[:, :, 0] >= 120) & (panel[:, :, 0] <= 167) & (panel[:, :, 1] > 95)))
         center = hsv[180:400, 10:326]
-        panel_hue = ((center[:, :, 0] >= 88) & (center[:, :, 0] <= 116)) | ((center[:, :, 0] >= 120) & (center[:, :, 0] <= 167))
+        # 纪录面板可为蓝、紫或金黄，仍需同时满足重量图标和暗背景条件。
+        panel_hue = (((center[:, :, 0] >= 88) & (center[:, :, 0] <= 116)) |
+                     ((center[:, :, 0] >= 120) & (center[:, :, 0] <= 167)) |
+                     ((center[:, :, 0] >= 14) & (center[:, :, 0] <= 38)))
         result_color = float(np.mean(panel_hue & (center[:, :, 1] > 110) & (center[:, :, 2] > 80)))
         dim = float(np.mean(hsv[475:542, 125:215, 2]))
         claim = hsv[507:548, 96:242]
