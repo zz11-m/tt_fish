@@ -1,0 +1,36 @@
+{
+  "config_version": 2,
+  "dry_run": false,
+  "continuous_fishing": true,
+  "capture_every_n_frames": 6,
+  "toggle_hotkey": "F8",
+  "pause_hotkey": "F9",
+  "snapshot_hotkey": "F10",
+  "input_latency_ms": 40.0,
+  "latency_uncertainty_ms": 12,
+  "key_hold_ms": 35,
+  "target_margin_px": 3,
+  "min_action_interval_s": 0.24,
+  "result_wait_s": 3.0,
+  "result_retry_s": 1.0,
+  "result_retry_jitter_ms": 40,
+  "unknown_timeout_s": 12,
+  "wait_timeout_s": 120,
+  "action_ack_timeout_s": 5,
+  "max_casts": 20,
+  "max_session_minutes": 15,
+  "template_threshold": 0.68,
+  "profile": {
+    "title": "雷电模拟器",
+    "client_size": [
+      603,
+      1038
+    ],
+    "crop": [
+      6,
+      43,
+      553,
+      991
+    ]
+  }
+}
