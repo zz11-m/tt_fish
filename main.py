@@ -2,7 +2,7 @@
 """PyCharm直接运行本文件。工作目录可任意，数据路径统一相对本工程。"""
 import sys
 
-def main():
+def main(show_errors=True):
     if sys.platform != "win32":
         print("实时助手需要Windows。离线检查请运行 selfcheck.py，录像分析请运行 replay.py。")
         return 1
@@ -13,11 +13,14 @@ def main():
     import queue
     import mss
     from PIL import Image, ImageTk
-    from fisher.config import load_config, save_config, validate_config, HOTKEYS, REFERENCE_FPS
+    from fisher.config import load_config, save_config, validate_config, HOTKEYS
+    from fisher.config import DATA_ROOT
     from fisher.windows import Windows
     from fisher.runtime import Runtime
     from fisher import __version__
     from fisher.project import PROJECT_URL, BILIBILI_URL, FREE_NOTICE, open_page
+    from fisher.speed import load_profile,save_profile,reference_profile
+    from fisher.emulators import EMULATORS, profile_matches
 
     class App:
         def __init__(self, root):
@@ -45,11 +48,19 @@ def main():
                 link.bind("<Return>", lambda event, target=url: self.open_link(target))
             top = ttk.Frame(root, padding=10)
             top.pack(fill="x")
-            ttk.Label(top, text="1. 选择雷电窗口").pack(side="left")
-            self.combo = ttk.Combobox(top, state="readonly", width=45)
+            ttk.Label(top, text="1. 选择模拟器").pack(side="left")
+            self.emulator = tk.StringVar(value=EMULATORS[self.cfg["emulator_type"]])
+            self.emulator_combo = ttk.Combobox(top, textvariable=self.emulator,
+                                               values=tuple(EMULATORS.values()), state="readonly", width=12)
+            self.emulator_combo.pack(side="left", padx=(8, 0))
+            self.emulator_combo.bind("<<ComboboxSelected>>", self.change_emulator)
+            self.combo = ttk.Combobox(top, state="readonly", width=30)
             self.combo.pack(side="left", padx=8, fill="x", expand=True)
             ttk.Button(top, text="刷新", command=self.refresh).pack(side="right")
             self.combo.bind("<<ComboboxSelected>>", self.bind_window)
+            self.include_other = tk.BooleanVar(value=False)
+            self.other_windows = ttk.Checkbutton(top, text="显示其他窗口", variable=self.include_other, command=self.refresh)
+            self.other_windows.pack(side="right", padx=(0, 8))
             # 顶部固定显示运行状态与暂停原因，避免提示挤出窗口底部。
             status = ttk.Frame(root, padding=(12, 0, 12, 8))
             status.pack(fill="x")
@@ -57,6 +68,10 @@ def main():
             self.notice = tk.StringVar(value="选择窗口并框选游戏画面后，开启监测和钓鱼。")
             ttk.Label(status, textvariable=self.control_status, font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
             ttk.Label(status, textvariable=self.notice, wraplength=740, foreground="#245b89").pack(anchor="w", pady=(2,0))
+            self.preview_shown = tk.BooleanVar(value=self.cfg["show_preview"])
+            self.preview_button = ttk.Button(status, text="隐藏预览" if self.preview_shown.get() else "显示预览",
+                                             command=self.toggle_preview)
+            self.preview_button.pack(anchor="w", pady=(3,0))
             content = ttk.Frame(root)
             content.pack(fill="both", expand=True)
             canvas = tk.Canvas(content, highlightthickness=0)
@@ -69,8 +84,10 @@ def main():
             body.bind("<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all")))
             canvas.bind("<Configure>", lambda event: canvas.itemconfigure(body_id, width=event.width))
             self.preview = ttk.Label(body, text="框选后显示游戏识别预览", anchor="center")
-            self.preview.pack(side="left", fill="both", padx=(0, 12))
+            if self.preview_shown.get():
+                self.preview.pack(side="left", fill="both", padx=(0, 12))
             panel = ttk.Frame(body)
+            self.panel = panel
             panel.pack(side="left", fill="both", expand=True)
             ttk.Button(panel, text="2. 框选完整游戏画面", command=self.prepare_crop).pack(fill="x", pady=5)
             ttk.Label(panel, text="完整选中游戏，包括底部游戏栏；排除模拟器\n标题栏、侧边工具栏及游戏外侧黑边。", wraplength=400).pack(anchor="w", pady=4)
@@ -81,13 +98,30 @@ def main():
             tabs.pack(fill="x", pady=5)
             options = ttk.Frame(tabs, padding=8)
             settings = ttk.Frame(tabs, padding=8)
+            speed_options = ttk.Frame(tabs, padding=8)
             recording = ttk.Frame(tabs, padding=8)
             tabs.add(options, text="钓鱼选项")
             tabs.add(settings, text="快捷键与延迟")
+            tabs.add(speed_options, text="速度与校准")
             tabs.add(recording, text="录制")
             self.settings_widgets = []
             self.dry = tk.BooleanVar(value=self.cfg["dry_run"])
             self.continuous = tk.BooleanVar(value=self.cfg["continuous_fishing"])
+            self.adaptive = tk.BooleanVar(value=self.cfg["adaptive_latency"])
+            self.calibrate = tk.BooleanVar(value=False)
+            try:
+                speed_profile=load_profile(DATA_ROOT/"speed_profile.json",self.cfg["speed_fraction_per_s"])
+            except (OSError,ValueError,TypeError):
+                speed_profile=reference_profile()
+            self.speed_hint=tk.StringVar(value=f'固定速度：{speed_profile["fraction_per_second"]*100:.2f}%条宽/秒')
+            ttk.Label(speed_options,textvariable=self.speed_hint,wraplength=440).pack(anchor="w",pady=4)
+            calibration=ttk.Checkbutton(speed_options,text="本次校准速度",variable=self.calibrate)
+            calibration.pack(anchor="w",pady=4)
+            self.settings_widgets.append(calibration)
+            ttk.Label(speed_options,text="不勾选时使用已保存的比例速度；校准稳定后自动保存。\n比例以判定条的可见全宽为单位。",wraplength=440).pack(anchor="w",pady=4)
+            restore=ttk.Button(speed_options,text="恢复参考速度",command=self.restore_speed)
+            restore.pack(anchor="w",pady=4)
+            self.settings_widgets.append(restore)
             for label,var,cmd in (("不停钓（忽略次数和时长上限）", self.continuous, self.update_limits),
                                   ("仅观察，不按空格", self.dry, None)):
                 widget = ttk.Checkbutton(options, text=label, variable=var, command=cmd)
@@ -96,8 +130,10 @@ def main():
             fields = [(options, "capture_every_n_frames", "每多少帧截图一次（1～60）"),
                       (options, "max_casts", "单次最多下钩次数"),
                       (options, "max_session_minutes", "单次最长运行（分钟）"),
-                      (settings, "input_latency_ms", "按键生效延迟（毫秒）"),
-                      (settings, "result_wait_s", "结果动画等待（秒）")]
+                      (settings, "input_latency_ms", "游戏响应延迟基准（毫秒）"),
+                      (settings, "result_wait_s", "结果动画等待（秒）"),
+                      (settings, "unknown_timeout_s", "画面未确认等待（秒；0不限）"),
+                      (settings, "timing_timeout_s", "黄条阶段等待（秒；0不限）")]
             self.values = {}
             self.entries = {}
             for parent, key, label in fields:
@@ -110,10 +146,12 @@ def main():
                 entry.pack(side="right")
                 self.entries[key] = entry
                 self.settings_widgets.append(entry)
-            self.capture_hint = tk.StringVar()
-            ttk.Label(options, textvariable=self.capture_hint, wraplength=490).pack(anchor="w", pady=3)
-            self.values["capture_every_n_frames"].trace_add("write", self.update_capture_hint)
-            self.update_capture_hint()
+                if key == "capture_every_n_frames":
+                    ttk.Label(parent, text="追求响应速度可调小；电脑卡顿时调大，采样会更慢。",
+                              wraplength=440, foreground="#555555").pack(anchor="w", pady=(0, 4))
+            adaptive = ttk.Checkbutton(settings, text="自动补偿本机输入执行耗时", variable=self.adaptive)
+            adaptive.pack(anchor="w", pady=3)
+            self.settings_widgets.append(adaptive)
             self.hotkey_values = {}
             for key, label in (("toggle_hotkey", "开始／暂停"), ("pause_hotkey", "紧急暂停"),
                                ("snapshot_hotkey", "保存游戏截图")):
@@ -149,6 +187,34 @@ def main():
             self.refresh()
             root.after(50, self.poll)
 
+        def restore_speed(self):
+            if self.runtime:
+                return
+            try:
+                profile=reference_profile()
+                save_profile(DATA_ROOT/"speed_profile.json",profile)
+                self.speed_hint.set(f'固定速度：{profile["fraction_per_second"]*100:.2f}%条宽/秒 · 参考值')
+            except OSError as exc:
+                messagebox.showerror("无法保存速度",str(exc))
+
+        def toggle_preview(self):
+            shown = not self.preview_shown.get()
+            self.preview_shown.set(shown)
+            self.preview_button.configure(text="隐藏预览" if shown else "显示预览")
+            if shown:
+                self.preview.pack(side="left", fill="both", padx=(0,12), before=self.panel)
+            else:
+                self.preview.pack_forget()
+                self.preview.configure(image="", text="预览已隐藏")
+                self.preview.image = None
+            self.cfg["show_preview"] = shown
+            if self.runtime:
+                self.runtime.command("show_preview" if shown else "hide_preview")
+            try:
+                save_config(self.cfg)
+            except OSError as exc:
+                self.notice.set(f"无法保存预览设置：{exc}")
+
         def open_link(self, url):
             if self.runtime:
                 self.runtime.command("pause")
@@ -180,15 +246,6 @@ def main():
             for key in ("max_casts", "max_session_minutes"):
                 self.entries[key].configure(state="disabled" if disabled else "normal")
 
-        def update_capture_hint(self, *args):
-            try:
-                n = int(self.values["capture_every_n_frames"].get())
-                if not 1 <= n <= 60:
-                    raise ValueError
-                self.capture_hint.set(f"按60帧/秒换算：约每秒{REFERENCE_FPS/n:g}次；数值越大，占用越低。")
-            except ValueError:
-                self.capture_hint.set("请输入1～60之间的整数。")
-
         def update_hotkey_hint(self):
             self.hotkey_hint.set(f'切回模拟器后：{self.cfg["toggle_hotkey"]} 开始／暂停\n'
                                  f'{self.cfg["pause_hotkey"]} 紧急暂停 · {self.cfg["snapshot_hotkey"]} 保存截图')
@@ -197,18 +254,43 @@ def main():
             for widget in self.settings_widgets:
                 widget.configure(state="disabled" if locked else ("readonly" if isinstance(widget, ttk.Combobox) else "normal"))
             self.combo.configure(state="disabled" if locked else "readonly")
+            self.emulator_combo.configure(state="disabled" if locked else "readonly")
+            self.other_windows.configure(state="disabled" if locked else "normal")
             self.start_button.configure(state="disabled" if locked else "normal")
             self.update_limits()
+
+        def selected_emulator(self):
+            return next(key for key, label in EMULATORS.items() if label == self.emulator.get())
+
+        def change_emulator(self, event=None):
+            if self.runtime:
+                return
+            self.cfg["emulator_type"] = self.selected_emulator()
+            self.include_other.set(False)
+            self.refresh()
 
         def refresh(self):
             if self.runtime:
                 messagebox.showinfo("请先停止", "更换窗口前请先停止监测。")
                 return
-            self.options = self.win.windows()
+            previous_hwnd = self.hwnd
+            self.hwnd = self.profile = None
+            self.crop_status.set("尚未框选")
+            self.preview.configure(image="", text="框选后显示游戏识别预览")
+            self.preview.image = None
+            self.options = self.win.windows(self.selected_emulator(), self.include_other.get())
             self.combo["values"] = [f"{title}  [窗口 {hwnd}]" for hwnd,title in self.options]
+            self.combo.set("")
             if self.options:
-                self.combo.current(0)
+                old_title = (self.cfg.get("profile") or {}).get("title")
+                index = next((i for i, (hwnd, _) in enumerate(self.options) if hwnd == previous_hwnd), None)
+                if index is None:
+                    index = next((i for i, (_, title) in enumerate(self.options) if title == old_title), 0)
+                self.combo.current(index)
                 self.bind_window()
+                self.notice.set("选择游戏窗口并框选完整游戏画面。自定义窗口名可勾选“显示其他窗口”。")
+            else:
+                self.notice.set("未找到所选模拟器窗口。请启动模拟器后刷新；自定义窗口名可勾选“显示其他窗口”。")
 
         def bind_window(self, event=None):
             if self.runtime:
@@ -221,7 +303,7 @@ def main():
             old = self.cfg.get("profile")
             try:
                 box = self.win.client_box(self.hwnd)
-                if old and old.get("title") == title and old.get("client_size") == list(box[2:]):
+                if profile_matches(old, self.selected_emulator(), title, box[2:]):
                     self.profile = old
             except OSError:
                 pass
@@ -238,6 +320,7 @@ def main():
 
         def crop(self):
             try:
+                crop_hwnd, crop_emulator = self.hwnd, self.selected_emulator()
                 if not self.win.foreground_matches(self.hwnd):
                     raise ValueError("所选模拟器不在前台，请重新框选并在3秒内切回模拟器")
                 left, top, w, h = self.win.client_box(self.hwnd)
@@ -247,6 +330,8 @@ def main():
                 self.root.deiconify()
                 win = tk.Toplevel(self.root)
                 win.title("拖框选择完整游戏画面，再点确认")
+                win.transient(self.root)
+                win.grab_set()
                 scale = min(1, 900/w, 680/h)
                 display = rgb.resize((round(w*scale),round(h*scale)))
                 photo = ImageTk.PhotoImage(display)
@@ -272,10 +357,15 @@ def main():
                     y1,y2 = sorted([coords[1],coords[3]])
                     x,y = round(x1/scale),round(y1/scale)
                     cw,ch = min(w-x,round((x2-x1)/scale)),min(h-y,round((y2-y1)/scale))
-                    if cw < 200 or ch < 350 or abs(cw/ch-336/598) > .035:
-                        messagebox.showerror("范围不合适", "请框选竖屏完整游戏画面，宽高比约0.562；包括底部黑色游戏栏。", parent=win)
+                    if cw < 200 or ch < 350 or not .35 <= cw/ch <= .85:
+                        messagebox.showerror("范围不合适", "请框选完整竖屏游戏画面，包括底部游戏栏，排除外侧黑边。", parent=win)
                         return
-                    self.profile = {"title":self.win.title(self.hwnd),"client_size":[w,h],"crop":[x,y,cw,ch]}
+                    if self.hwnd != crop_hwnd or self.selected_emulator() != crop_emulator:
+                        messagebox.showerror("窗口已改变", "请重新框选当前窗口。", parent=win)
+                        return
+                    self.profile = {"title":self.win.title(crop_hwnd),"client_size":[w,h],"crop":[x,y,cw,ch],
+                                    "emulator_type":crop_emulator}
+                    self.cfg["emulator_type"] = crop_emulator
                     self.cfg["profile"] = self.profile
                     save_config(self.cfg)
                     self.crop_status.set(f"已框选 {cw}×{ch}；窗口大小变化后需要重新框选")
@@ -295,8 +385,13 @@ def main():
                 return
             try:
                 cfg = dict(self.cfg)
+                cfg["emulator_type"] = self.selected_emulator()
                 cfg["dry_run"] = self.dry.get()
                 cfg["continuous_fishing"] = self.continuous.get()
+                cfg["timing_mode"] = "phase"
+                cfg["adaptive_latency"] = self.adaptive.get()
+                cfg["calibrate_speed"] = self.calibrate.get()
+                cfg["show_preview"] = self.preview_shown.get()
                 for key,var in self.values.items():
                     if cfg["continuous_fishing"] and key in ("max_casts", "max_session_minutes"):
                         continue
@@ -344,6 +439,9 @@ def main():
         def poll(self):
             r = self.runtime
             if r:
+                self.speed_hint.set(r.speed_status)
+                if r.calibration_complete:
+                    self.calibrate.set(False)
                 try:
                     while True:
                         kind, data = r.messages.get_nowait()
@@ -353,9 +451,10 @@ def main():
                             self.notice.set(data["reason"])
                         elif kind == "frame":
                             frame,info = data
-                            photo = ImageTk.PhotoImage(Image.fromarray(frame[:,:,::-1]))
-                            self.preview.configure(image=photo,text="")
-                            self.preview.image = photo
+                            if self.preview_shown.get() and frame is not None:
+                                photo = ImageTk.PhotoImage(Image.fromarray(frame[:,:,::-1]))
+                                self.preview.configure(image=photo,text="")
+                                self.preview.image = photo
                             mode = "观察" if info["dry_run"] else "自动"
                             self.update_control(info)
                             if not info["active"]:
@@ -386,7 +485,8 @@ def main():
         root.mainloop()
     except Exception as exc:
         from tkinter import messagebox
-        messagebox.showerror("启动失败", str(exc))
+        if show_errors:
+            messagebox.showerror("启动失败", str(exc))
         root.destroy()
         raise
     return 0

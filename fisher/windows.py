@@ -4,6 +4,7 @@ import ctypes as C
 from ctypes import wintypes as T
 import sys
 import time
+from .emulators import select_windows
 
 def enable_dpi_awareness():
     if sys.platform != "win32":
@@ -61,7 +62,7 @@ class Windows:
         self.u.GetWindowTextW(hwnd, buf, len(buf))
         return buf.value
 
-    def windows(self):
+    def windows(self, emulator_type="ldplayer", include_other=False):
         found = []
         @self.callback_type
         def callback(hwnd, param):
@@ -75,7 +76,7 @@ class Windows:
                     pass
             return True
         self.u.EnumWindows(callback, 0)
-        return sorted(found, key=lambda x: (not any(k in x[1].lower() for k in ("雷电", "ldplayer")), x[1]))
+        return select_windows(found, emulator_type, include_other)
 
     def client_box(self, hwnd):
         rect, pt = T.RECT(), T.POINT(0, 0)
@@ -102,17 +103,28 @@ class Windows:
             # 失焦时仍释放本程序按下的空格，避免按键卡住；不产生新的keydown。
             self._send(up=True)
             self.owns_space = False
+            self.last_key_up_at = time.perf_counter()
 
     def tap_space(self, hwnd, hold_ms, cancelled, guard=None):
         self.interrupted = False
+        self.last_key_down_at = self.last_key_up_at = None
+        self.last_send_begin = self.last_send_end = None
         if cancelled() or not self.foreground_matches(hwnd) or (guard and not guard()):
             return False
         if any(self.key_down(k) for k in (0x10, 0x11, 0x12, 0x5B, 0x5C, 0x20)):
             raise OSError("检测到手动空格或修饰键按下，自动操作已暂停")
+        # 系统查询也可能遇到调度卡顿；在注入前复核取消、焦点和截图时效。
+        if cancelled() or not self.foreground_matches(hwnd) or (guard and not guard()):
+            return False
         try:
+            self.last_send_begin = time.perf_counter()
             self._send()
+            self.last_send_end = time.perf_counter()
+            self.last_key_down_at = (self.last_send_begin+self.last_send_end)/2
             self.owns_space = True
-            deadline = time.perf_counter()+hold_ms/1000
+            # 已阻塞的系统调用结束后尽快释放，避免再叠加一次完整按住时间。
+            blocked=self.last_send_end-self.last_send_begin>.050
+            deadline = time.perf_counter()+(0 if blocked else hold_ms/1000)
             while time.perf_counter() < deadline:
                 if cancelled() or not self.foreground_matches(hwnd):
                     self.interrupted = True

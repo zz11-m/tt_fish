@@ -14,6 +14,8 @@ from fisher.runtime import Runtime
 from fisher.scheduling import CaptureSchedule, Hotkeys
 from fisher.vision import Observation
 
+DEFAULTS = dict(DEFAULTS, timing_mode="center", capture_every_n_frames=6)
+
 
 class OptionsTests(unittest.TestCase):
     def test_old_config_keeps_profile_and_migrates_sampling_and_retries(self):
@@ -72,7 +74,7 @@ class ContinuousTests(unittest.TestCase):
         self.assertEqual(c.cast_count, 501)
 
     def test_unchecked_continuous_restores_both_limits(self):
-        c = Controller(dict(DEFAULTS, max_casts=1, max_session_minutes=1))
+        c = Controller(dict(DEFAULTS, continuous_fishing=False, max_casts=1, max_session_minutes=1))
         c.cast_count = 1
         c.step(Observation("IDLE", 1), 0)
         self.assertTrue(c.step(Observation("IDLE", 1), .1).pause)
@@ -82,7 +84,7 @@ class ContinuousTests(unittest.TestCase):
     def test_continuous_keeps_unknown_and_ack_timeout(self):
         c = Controller(dict(DEFAULTS, continuous_fishing=True))
         c.step(Observation(), 0)
-        self.assertTrue(c.step(Observation(), 13).pause)
+        self.assertTrue(c.step(Observation(), c.cfg["unknown_timeout_s"]+1).pause)
         c.reset(0)
         c.step(Observation("IDLE", 1), 0)
         c.step(Observation("IDLE", 1), .1)
@@ -272,14 +274,16 @@ class RuntimeIntegrationTests(unittest.TestCase):
             publish()
         r.publish_control = tracked
         with tempfile.TemporaryDirectory() as tmp, \
-             patch("fisher.runtime.ROOT", Path(tmp)), \
+             patch("fisher.runtime.DATA_ROOT", Path(tmp)), \
              patch("fisher.runtime.time.perf_counter", clock.now), \
              patch("fisher.runtime.mss.mss", Screen), \
-             patch("fisher.runtime.Detector", Detector):
+             patch("fisher.runtime.Detector", Detector), \
+             patch("fisher.runtime.annotate") as draw:
             r.run()
+            draw.assert_not_called()
             logs = list((Path(tmp)/"logs").glob("*.jsonl"))
-            self.assertEqual(len(logs), 1)
-            self.assertNotIn('"fatal"', logs[0].read_text(encoding="utf-8"))
+            self.assertEqual(logs, [])
+            self.assertEqual(len(list((Path(tmp)/"trial_exports").glob("*.zip"))),0)
         self.assertTrue(any(.04 <= t < .09 and active for t, active in changes))
         self.assertTrue(any(.35 <= t < .4 and not active for t, active in changes))
         self.assertLessEqual(len(grabs), 12)

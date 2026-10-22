@@ -5,15 +5,24 @@ import json
 from pathlib import Path
 import zipfile
 from .config import DEFAULTS, ROOT, validate_config
-from .vision import TEMPLATE_DEFINITIONS
+from .templates import TEMPLATE_DEFINITIONS
 
 PUBLIC_FILES = (
     "README.md", "LICENSE", "NOTICE.md", "CHANGELOG.md", "requirements.txt",
     ".gitignore", ".gitattributes", "config.example.json",
-    "main.py", "replay.py", "selfcheck.py", "build_release.py", "make_support_bundle.py",
+    "main.py", "desktop.py", "build_windows.py", "replay.py", "selfcheck.py", "build_release.py", "make_support_bundle.py",
     "fisher/__init__.py", "fisher/config.py", "fisher/controller.py", "fisher/runtime.py",
-    "fisher/scheduling.py", "fisher/vision.py", "fisher/windows.py", "fisher/project.py", "fisher/packaging.py",
+    "fisher/emulators.py", "tests/test_emulators.py", "tests/test_red_result.py", "tests/assets/record_weight_bronze.png",
+    "fisher/contact.py", "fisher/trial_capture.py", "tests/test_contact.py", "tests/test_trial.py", "docs/ALGORITHM.md",
+    "fisher/jsonio.py", "tests/test_diagnostics.py", "tests/assets/timing_marker_clear.png", "tests/assets/timing_marker_split.png",
+    "tests/test_followup.py", "tests/assets/timing_right_approach.png", "tests/assets/timing_hit_effect.png",
+    "fisher/speed.py", "fisher/phase.py", "tests/test_phase.py", "tests/test_speed.py", "tests/test_arrival.py",
+    "fisher/templates.py", "fisher/scheduling.py", "fisher/vision.py", "fisher/windows.py", "fisher/project.py", "fisher/packaging.py",
     "tests/fixtures.py", "tests/test_behavior.py", "tests/test_options.py", "tests/test_startup.py", "tests/test_release.py",
+    "tests/test_desktop.py", "tests/test_windows_package.py",
+    "packaging/windows-runtime.lock.json", "packaging/start.bat", "packaging/check.bat",
+    "packaging/portable-readme.txt", "docs/WINDOWS.md",
+    ".github/workflows/windows-portable.yml",
     "docs/DEVELOPMENT.md", "docs/PRIVACY.md", "docs/images/crop-example.png",
     ".github/ISSUE_TEMPLATE/bug_report.md",
 ) + tuple(f"assets/templates/{name}.png" for name in TEMPLATE_DEFINITIONS)

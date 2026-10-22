@@ -9,6 +9,10 @@ class CaptureSchedule:
         self.interval = capture_interval(cfg)
         self.next_at = 0.0
 
+    def request_earlier(self, deadline, started, finished):
+        if deadline is not None:
+            self.next_at = min(self.next_at, max(started+.025, finished, deadline))
+
     def due(self, now):
         return now >= self.next_at
 

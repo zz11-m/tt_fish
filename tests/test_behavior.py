@@ -8,6 +8,8 @@ from fisher.vision import Detector, Observation, read_image
 from fisher.controller import Controller
 from fixtures import make_frame
 
+DEFAULTS = dict(DEFAULTS, timing_mode="center", continuous_fishing=False)
+
 class VisionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -94,7 +96,7 @@ class ControlTests(unittest.TestCase):
         for t in (.4,1,2):
             d = self.c.step(Observation(),t)
             self.assertIsNone(d.action)
-        self.assertTrue(self.c.step(Observation(),13).pause)
+        self.assertTrue(self.c.step(Observation(),self.c.cfg["unknown_timeout_s"]+1).pause)
 
     def test_no_press_on_one_frame_bite(self):
         self.assertIsNone(self.c.step(Observation("BITE",1),1).action)
@@ -208,7 +210,7 @@ class InputGuardTests(unittest.TestCase):
 
     def test_emergency_during_hold_releases_and_marks_interruption(self):
         win=self.instance()
-        polls=[False, True]
+        polls=[False, False, True]
         def cancelled():
             return polls.pop(0) if polls else True
         self.assertTrue(win.tap_space(1,35,cancelled))

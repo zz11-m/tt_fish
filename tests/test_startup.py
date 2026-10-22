@@ -11,6 +11,7 @@ class FakeWindow:
         self.size = (336,598)
     def foreground_matches(self, hwnd): return self.focused
     def client_box(self, hwnd): return (10,20,*self.size)
+    def release(self): pass
 
 class StartupTests(unittest.TestCase):
     def setUp(self):

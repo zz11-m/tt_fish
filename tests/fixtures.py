@@ -26,7 +26,8 @@ def make_frame(state, variant="blue"):
         image[397:408,172:245] = (0,235,255)
         image[384:414,99:107] = (20,40,220)
     elif state == "RESULT":
-        colors = {"blue": (240,150,30), "purple": (230,20,180), "gold": (35,200,255)}
+        colors = {"blue": (240,150,30), "purple": (230,20,180), "gold": (35,200,255),
+                  "red": (60,40,240), "red_wrap": (80,40,240)}
         image[180:400,10:326] = colors[variant]
         paste("weight")
         image[475:542,125:215] = (20,20,20)

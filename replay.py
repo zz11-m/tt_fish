@@ -3,17 +3,17 @@
 import argparse
 import csv
 from dataclasses import asdict
-import json
+from fisher.jsonio import dumps
 from pathlib import Path
 import cv2
-from fisher.config import ROOT, load_config
+from fisher.config import ROOT, DATA_ROOT, load_config
 from fisher.vision import Detector, read_image, write_image, annotate
 from fisher.controller import Controller
 
 def main():
     parser = argparse.ArgumentParser(description="分析截图或游戏录像，输出识别和拟议动作，不发送任何按键")
     parser.add_argument("--input", type=Path, help="截图或录像文件；省略时分析文档中的框选示例")
-    parser.add_argument("--output", type=Path, default=ROOT/"replay_output")
+    parser.add_argument("--output", type=Path, default=DATA_ROOT/"replay_output")
     parser.add_argument("--crop", type=int, nargs=4, metavar=("X","Y","W","H"), help="外部录像中的游戏范围")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -43,6 +43,7 @@ def main():
     controller = Controller(cfg)
     controller.reset(0)
     n = 0
+    pending = None
     out = (args.output/"analysis.jsonl").open("w",encoding="utf-8")
     try:
         while True:
@@ -55,12 +56,19 @@ def main():
                 x,y,w,h = args.crop
                 img = img[y:y+h,x:x+w]
             obs,frame = detector.detect(img)
+            if pending is not None and pending.send_at <= t:
+                controller.commit(pending.action,pending.send_at)
+                pending = None
             decision = controller.step(obs,t)
-            out.write(json.dumps({"frame":n,"t":t,"state":obs.state,"marker":obs.marker,"target":obs.target,
-                                  **asdict(decision)}, ensure_ascii=False)+"\n")
+            pending = None
+            out.write(dumps({"frame":n,"t":t,"state":obs.state,"marker":obs.marker,"target":obs.target,
+                                  **asdict(decision)})+"\n")
             if decision.action:
                 # 仅模拟锁存，用于观察决策顺序；录像不会因拟议按键而改变。
-                controller.commit(decision.action,t)
+                if decision.send_at is not None and decision.send_at > t:
+                    pending = decision
+                else:
+                    controller.commit(decision.action,t)
                 write_image(args.output/f"action_{n:06}.png", annotate(frame,obs,decision.predicted_x))
             n += 1
     finally:

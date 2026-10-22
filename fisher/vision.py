@@ -5,17 +5,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-W, H = 336, 598
-TEMPLATE_DEFINITIONS = {
-    "idle": ((134, 461, 198, 521), 7),
-    "wait": ((133, 459, 200, 524), 7),
-    "bite": ((114, 363, 228, 382), 9),
-    "purple": ((133, 459, 201, 524), 7),
-    "cap": ((248, 389, 263, 416), 6),
-    "weight": ((104, 365, 122, 388), 12),
-    "claim_title": ((88, 68, 248, 110), 9),
-    "claim_button": ((130, 515, 166, 539), 9),
-}
+from .templates import W, H, TEMPLATE_DEFINITIONS
+
 LABELS = {"IDLE": "准备下钩", "WAIT": "等待上钩", "BITE": "需要拉钩",
           "TIMING": "黄条判定", "RESULT": "结果展示", "UNKNOWN": "未确认画面"}
 
@@ -48,6 +39,10 @@ class Observation:
     geometry_clear: bool = False
     scores: dict = field(default_factory=dict)
     variant: str | None = None
+    marker_left: float | None = None
+    marker_right: float | None = None
+    track_left: float | None = None
+    track_right: float | None = None
 
 class Detector:
     def __init__(self, asset_dir, threshold=0.68):
@@ -68,7 +63,23 @@ class Detector:
         return float(cv2.minMaxLoc(score)[1])
 
     @staticmethod
+    def track_bounds(hsv):
+        # 读取轨道两侧深色外框；统一以可见全宽为比例单位，不能混用截图宽度。
+        band=hsv[395:410,77:266,2]<55
+        columns=np.flatnonzero(np.sum(band,axis=0)>=3)
+        if len(columns)<8 or float(np.mean(band))>.65:
+            return None,None
+        left,right=int(columns[0])+77,int(columns[-1])+77
+        if not 120<=right-left<=188:
+            return None,None
+        return float(left),float(right)
+
+    @staticmethod
     def timing_geometry(hsv):
+        return Detector.timing_details(hsv)[:4]
+
+    @staticmethod
+    def timing_details(hsv):
         x0, y0, x1, y1 = 77, 376, 266, 426
         roi = hsv[y0:y1, x0:x1]
         red = (((roi[:, :, 0] < 13) | (roi[:, :, 0] > 172)) &
@@ -76,37 +87,48 @@ class Detector:
         n, labels, stats, centers = cv2.connectedComponentsWithStats(red)
         markers = []
         for i in range(1, n):
-            x, y, w, h, area = stats[i]
-            if 2 <= w <= 19 and 12 <= h <= 40 and area >= 20 and h > w:
-                markers.append((int(area), float(centers[i][0] + x0)))
-        marker = max(markers)[1] if markers else None
+            x, y, w, h, area = map(int, stats[i])
+            # 红色鱼漂会被白色描边/高光分成几段；主体可能比高度稍宽。
+            crosses_track = y+y0 < 411 and y+y0+h > 394
+            if 2 <= w <= 22 and 10 <= h <= 40 and area >= 25 and h >= w*.55 and crosses_track:
+                markers.append((int(area), float(centers[i][0] + x0), float(x+x0-1), float(x+x0+w)))
+        best = max(markers) if markers else None
+        marker = best[1] if best else None
+        bounds = best[2:] if best else (None, None)
         # 黄色必须为横向色块，且位于窄轨道内部；紫色拉钩面板在外层优先排除。
         yellow = cv2.inRange(hsv[391:414, x0:x1], (18, 95, 160), (38, 255, 255))
         n, labels, stats, centers = cv2.connectedComponentsWithStats(yellow)
         parts = []
         for i in range(1, n):
-            x, y, w, h, area = stats[i]
+            x, y, w, h, area = map(int, stats[i])
             if w >= 2 and 4 <= h <= 18 and area >= 10:
                 parts.append((x+x0, x+x0+w-1, y+391, h, area))
         if not parts:
-            return marker, None, None, False
+            return marker, None, None, False, *bounds
         # 浮标可能遮挡黄色条；合并同一行、相隔不超过浮标宽度的两段。
         parts.sort()
         merged = []
         for p in parts:
-            if merged and p[0]-merged[-1][1] <= 17 and abs(p[2]-merged[-1][2]) <= 3:
+            covered_gap = (merged and marker is not None and
+                           merged[-1][1] <= marker <= p[0] and
+                           p[0]-merged[-1][1] <= bounds[1]-bounds[0]+4)
+            if merged and (p[0]-merged[-1][1] <= 17 or covered_gap) and abs(p[2]-merged[-1][2]) <= 3:
                 a = merged.pop()
                 merged.append((a[0], p[1], min(a[2], p[2]), max(a[3], p[3]), a[4]+p[4]))
             else:
                 merged.append(p)
         left, right, y, height, area = max(merged, key=lambda a: a[4])
-        clear = marker is not None and (marker < left-12 or marker > right+12)
-        return marker, (float(left), float(right)), y+height/2, clear
+        clear = bool(marker is not None and (marker < left-12 or marker > right+12))
+        return marker, (float(left), float(right)), float(y+height/2), clear, *bounds
 
     def detect(self, image):
         img = normalize(image)
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        scores = {name: self.match(img, name) for name in self.templates}
+        scores = {}
+        def score(name):
+            if name not in scores:
+                scores[name] = self.match(img, name)
+            return scores[name]
         btn = hsv[455:524, 131:203]
         green = float(np.mean((btn[:, :, 0] >= 35) & (btn[:, :, 0] <= 85) &
                               (btn[:, :, 1] > 95) & (btn[:, :, 2] > 115)))
@@ -115,10 +137,10 @@ class Detector:
         panel = hsv[356:387, 88:253]
         panel_purple = float(np.mean((panel[:, :, 0] >= 120) & (panel[:, :, 0] <= 167) & (panel[:, :, 1] > 95)))
         center = hsv[180:400, 10:326]
-        # 纪录面板可为蓝、紫或金黄，仍需同时满足重量图标和暗背景条件。
+        # 红橙渐变包含HSV红色的两端；仍需重量图标和暗背景联合确认。
         panel_hue = (((center[:, :, 0] >= 88) & (center[:, :, 0] <= 116)) |
                      ((center[:, :, 0] >= 120) & (center[:, :, 0] <= 167)) |
-                     ((center[:, :, 0] >= 14) & (center[:, :, 0] <= 38)))
+                     (center[:, :, 0] <= 38) | (center[:, :, 0] >= 168))
         result_color = float(np.mean(panel_hue & (center[:, :, 1] > 110) & (center[:, :, 2] > 80)))
         dim = float(np.mean(hsv[475:542, 125:215, 2]))
         claim = hsv[507:548, 96:242]
@@ -127,21 +149,28 @@ class Detector:
         dark_edges = float(np.mean(hsv[130:430, :65, 2] < 80))
         scores.update(green=green, purple=purple, panel_purple=panel_purple,
                       result_color=result_color, dim=dim, claim_green=claim_green, dark_edges=dark_edges)
-        claim_score = min(scores["claim_title"], scores["claim_button"])
-        if claim_score >= max(.72, self.threshold) and claim_green > .5 and dark_edges > .65:
-            return Observation("RESULT", claim_score, scores=scores, variant="claim"), img
-        if scores["weight"] >= self.threshold and result_color > .45 and dim < 165:
-            return Observation("RESULT", scores["weight"], scores=scores, variant="record"), img
-        if panel_purple > 0.35 and scores["bite"] >= self.threshold and purple > 0.16:
-            return Observation("BITE", scores["bite"], scores=scores), img
-        marker, target, y, clear = self.timing_geometry(hsv)
-        if purple > 0.16 and scores["cap"] >= self.threshold and panel_purple < 0.25:
-            # 暂时遮挡黄色条或浮标时仍能认出阶段，但控制器不产生判定按键。
-            return Observation("TIMING", scores["cap"], marker, target, y, clear, scores), img
-        if green > 0.20 and scores["idle"] >= self.threshold:
-            return Observation("IDLE", scores["idle"], scores=scores), img
-        if float(np.mean(btn[:, :, 1])) < 55 and scores["wait"] >= self.threshold:
-            return Observation("WAIT", scores["wait"], scores=scores), img
+        if claim_green > .5 and dark_edges > .65:
+            claim_score = min(score("claim_title"), score("claim_button"))
+            if claim_score >= max(.72, self.threshold):
+                return Observation("RESULT", claim_score, scores=scores, variant="claim"), img
+        if result_color > .45 and dim < 165 and score("weight") >= self.threshold:
+            return Observation("RESULT", score("weight"), scores=scores, variant="record"), img
+        if panel_purple > 0.35 and purple > 0.16 and score("bite") >= self.threshold:
+            return Observation("BITE", score("bite"), scores=scores), img
+        if purple > 0.16 and panel_purple < 0.25:
+            cap_score = score("cap")
+            if cap_score < self.threshold:
+                # 鱼漂经过右端会挡住原模板，使用未被遮挡的左端复核。
+                cap_score = max(cap_score, score("cap_left"))
+            if cap_score >= self.threshold:
+                marker, target, y, clear, ml, mr = self.timing_details(hsv)
+                tl,tr=self.track_bounds(hsv)
+                return Observation("TIMING", cap_score, marker, target, y, clear, scores,
+                                   marker_left=ml, marker_right=mr,track_left=tl,track_right=tr), img
+        if green > 0.20 and score("idle") >= self.threshold:
+            return Observation("IDLE", score("idle"), scores=scores), img
+        if float(np.mean(btn[:, :, 1])) < 55 and score("wait") >= self.threshold:
+            return Observation("WAIT", score("wait"), scores=scores), img
         return Observation(scores=scores), img
 
 def annotate(img, obs, prediction=None):

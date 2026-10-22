@@ -6,6 +6,9 @@ import math
 import random
 import numpy as np
 from .config import capture_interval
+from .contact import ContactModel, DeliveryLatency
+from .speed import SpeedCalibration, DEFAULT_SPEED
+from .phase import PhaseModel
 
 @dataclass
 class Decision:
@@ -15,6 +18,23 @@ class Decision:
     predicted_x: float | None = None
     velocity: float = 0.0
     uncertainty: float = 0.0
+    check_at: float | None = None
+    send_at: float | None = None
+    contact_x: float | None = None
+    round_id: int = 0
+    motion_event: str = ""
+    fit_error: float = 0.0
+    latency_ms: float = 0.0
+    frame_age_ms: float = 0.0
+    feedback: str = ""
+    retry_count: int = 0
+    pause_code: str = ""
+    arrival_ms: float | None = None
+    arrival_direction: int = 0
+    planned_turns: int = 0
+    endpoint_source: str = ""
+    click_mode: str = ""
+    valid_until: float | None = None
 
 class Motion:
     def __init__(self, interval=1/60):
@@ -63,6 +83,8 @@ class Controller:
     def __init__(self, cfg, rng=None):
         self.cfg = cfg
         self.rng = rng if rng is not None else random.Random()
+        self.latency = DeliveryLatency(cfg["input_latency_ms"], cfg.get("adaptive_latency", True))
+        self.speed=SpeedCalibration(cfg.get("speed_fraction_per_s",DEFAULT_SPEED),cfg.get("calibrate_speed",False))
         self.reset(0.0)
 
     def reset(self, now):
@@ -80,6 +102,8 @@ class Controller:
         self.result_presses = 0
         self.next_result_press_at = None
         self.motion = Motion(capture_interval(self.cfg))
+        self.contact = ContactModel(self.cfg, self.latency,self.speed)
+        self.phase = PhaseModel(self.cfg, self.latency,self.speed)
         self.target = None
         self.target_candidate = None
         self.target_count = 0
@@ -105,6 +129,8 @@ class Controller:
         if new == "TIMING" and old != "TIMING":
             # 短暂丢失不会走到这里（UNKNOWN不会覆盖已确认状态）。
             self.motion.clear()
+            self.contact = ContactModel(self.cfg, self.latency,self.speed)
+            self.phase = PhaseModel(self.cfg, self.latency,self.speed)
             self.target = self.target_candidate = None
             self.target_count = 0
             self.shot_locked = False
@@ -119,6 +145,8 @@ class Controller:
         elif action == "HOOK":
             self.pending_ack = ("BITE", now)
         elif action == "HIT":
+            self.contact.commit(now)
+            self.phase.commit(now)
             self.shot_locked = True
             self.shot_target = self.target
             self.round_reset_seen = False
@@ -130,39 +158,49 @@ class Controller:
     def step(self, obs, frame_time, now=None):
         now = frame_time if now is None else now
         if not self.cfg["continuous_fishing"] and now-self.started >= self.cfg["max_session_minutes"]*60:
-            return Decision(reason="达到本次运行时长上限", pause=True)
+            return Decision(reason="达到本次运行时长上限", pause=True, pause_code="duration_limit")
         if obs.state == "UNKNOWN":
+            self.contact.motion.clear("unknown")
+            self.contact.candidate, self.contact.target_count = None, 0
             self.candidate = "UNKNOWN"
             self.candidate_count = 0
             self.pending_timing = None
             self.unknown_since = now if self.unknown_since is None else self.unknown_since
-            if now-self.unknown_since >= self.cfg["unknown_timeout_s"]:
-                return Decision(reason="画面长时间无法确认，已暂停；检查遮挡、弹窗和框选范围", pause=True)
-            return Decision(reason="画面未确认，暂不按键")
+            limit=self.cfg["unknown_timeout_s"]
+            if limit and now-self.unknown_since >= limit:
+                return Decision(reason="画面长时间无法确认，已暂停；检查遮挡、弹窗和框选范围", pause=True, pause_code="unknown_timeout")
+            elapsed=max(0,now-self.unknown_since)
+            return Decision(reason=f"画面未确认，已等待{elapsed:.0f}秒"+
+                            (f"／{limit:g}秒" if limit else "（不自动超时）"))
         self.unknown_since = None
         if obs.state == self.candidate:
             self.candidate_count += 1
         else:
             self.candidate, self.candidate_count = obs.state, 1
             self.pending_timing = (obs, frame_time) if obs.state == "TIMING" else None
-        if self.candidate_count < 2:
-            return Decision(reason="等待连续帧确认")
+        fast_timing = (self.cfg.get("timing_mode") == "phase" and obs.confidence >= .68 and
+                       (obs.state == "BITE" or (obs.state == "TIMING" and obs.track_left is not None)))
+        if self.candidate_count < 2 and not fast_timing:
+            check_at = now+.025 if obs.state == "TIMING" and self.cfg.get("timing_mode") == "contact" else None
+            return Decision(reason="等待连续帧确认", check_at=check_at)
         if obs.state != self.state:
             self._transition(obs.state, now)
-            if obs.state == "TIMING" and self.pending_timing is not None:
+            if obs.state == "TIMING" and self.pending_timing is not None and self.cfg.get("timing_mode") != "phase":
                 # 确认前不按键；确认后保留第一张判定图的边界和运动样本。
                 previous, previous_time = self.pending_timing
                 self._timing(previous, previous_time, now)
             self.pending_timing = None
         if self.pending_ack:
             if now-self.pending_ack[1] > self.cfg["action_ack_timeout_s"]:
-                return Decision(reason="按键后画面未进入下一阶段，已暂停；请检查空格映射", pause=True)
+                return Decision(reason="按键后画面未进入下一阶段，已暂停；请检查空格映射", pause=True, pause_code="action_ack_timeout")
             return Decision(reason="已按键，等待阶段变化")
         if self.state == "WAIT":
-            return Decision(reason="等待鱼上钩", pause=now-self.entered > self.cfg["wait_timeout_s"])
+            expired = now-self.entered > self.cfg["wait_timeout_s"]
+            return Decision(reason="等待上钩超时，已暂停" if expired else "等待鱼上钩",
+                            pause=expired, pause_code="wait_timeout" if expired else "")
         if self.state == "IDLE":
             if not self.cfg["continuous_fishing"] and self.cast_count >= self.cfg["max_casts"]:
-                return Decision(reason="达到下钩次数上限", pause=True)
+                return Decision(reason="达到下钩次数上限", pause=True, pause_code="cast_limit")
             if now-self.entered >= .30 and now-self.last_press >= .6:
                 return Decision("CAST", "初始画面已确认，下钩一次")
         elif self.state == "BITE":
@@ -179,8 +217,18 @@ class Controller:
         return Decision(reason="等待画面稳定")
 
     def _timing(self, obs, t, now):
-        if now-self.entered > 50:
-            return Decision(reason="判定阶段超时，已暂停", pause=True)
+        limit=self.cfg.get("timing_timeout_s",120)
+        if limit and now-self.entered > limit:
+            return Decision(reason="判定阶段超时，已暂停",pause=True,pause_code="timing_timeout")
+        if self.cfg.get("timing_mode") == "phase":
+            result = Decision(**self.phase.step(obs,t,now))
+            self.target, self.shot_locked = self.phase.target, self.phase.locked
+            return result
+        if self.cfg.get("timing_mode", "center") == "contact":
+            result = Decision(**self.contact.step(obs, t, now))
+            self.target = self.contact.target
+            self.shot_locked = self.contact.locked
+            return result
         if obs.marker is None or obs.target is None:
             self.motion.clear()
             # 没找到黄色区域不等于新一轮，不能因此解锁连按。
@@ -211,7 +259,7 @@ class Controller:
                 self.motion.add(t, obs.marker)
                 return Decision(reason="检测到下一轮变化，重新估计速度")
             if now-self.last_press > 6:
-                return Decision(reason="按键后未确认下一轮，已暂停", pause=True)
+                return Decision(reason="按键后未确认下一轮，已暂停", pause=True, pause_code="hit_ack_timeout")
             return Decision(reason="本轮已触发，等待黄条变化或浮标复位")
         if now-self.last_press < self.cfg["min_action_interval_s"]:
             return Decision(reason="按键间隔保护")

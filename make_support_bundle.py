@@ -3,7 +3,7 @@
 import argparse
 from datetime import datetime
 import json
-from fisher.config import ROOT, DEFAULTS, load_config
+from fisher.config import DATA_ROOT, DEFAULTS, load_config
 from fisher.packaging import source_payloads, write_archive
 
 
@@ -16,25 +16,25 @@ def main():
     payloads = source_payloads()
     selected = []
     if args.include_logs:
-        for path in sorted((ROOT/"logs").glob("*.jsonl*"),key=lambda p:p.stat().st_mtime,reverse=True)[:3]:
+        for path in sorted((DATA_ROOT/"logs").glob("*.jsonl*"),key=lambda p:p.stat().st_mtime,reverse=True)[:3]:
             selected.append(path)
         cfg = load_config()
         clean = {key:cfg[key] for key in DEFAULTS}
         clean["profile"] = None
         payloads["diagnostics/config.redacted.json"] = (json.dumps(clean,ensure_ascii=False,indent=2)+"\n").encode("utf-8")
     if args.include_screenshots:
-        selected.extend(sorted((ROOT/"snapshots").glob("*.png"),key=lambda p:p.stat().st_mtime,reverse=True)[:10])
+        selected.extend(sorted((DATA_ROOT/"snapshots").glob("*.png"),key=lambda p:p.stat().st_mtime,reverse=True)[:10])
     if args.include_video:
-        videos = sorted((ROOT/"recordings").glob("*.avi"),key=lambda p:p.stat().st_mtime,reverse=True)
+        videos = sorted((DATA_ROOT/"recordings").glob("*.avi"),key=lambda p:p.stat().st_mtime,reverse=True)
         if videos:
             selected.append(videos[0])
             if videos[0].with_suffix(".csv").exists():
                 selected.append(videos[0].with_suffix(".csv"))
     for path in selected:
-        if path.is_symlink() or not path.resolve().is_relative_to(ROOT.resolve()):
+        if path.is_symlink() or not path.resolve().is_relative_to(DATA_ROOT.resolve()):
             raise ValueError("诊断数据路径无效")
-        payloads["diagnostics/"+path.relative_to(ROOT).as_posix()] = path.read_bytes()
-    dest = ROOT/"support"/f"tt_fish_support_{datetime.now():%Y%m%d_%H%M%S_%f}.zip"
+        payloads["diagnostics/"+path.relative_to(DATA_ROOT).as_posix()] = path.read_bytes()
+    dest = DATA_ROOT/"support"/f"tt_fish_support_{datetime.now():%Y%m%d_%H%M%S_%f}.zip"
     write_archive(dest,payloads)
     print(f"诊断包已生成：{dest}")
     if selected:
