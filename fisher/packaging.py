@@ -13,6 +13,7 @@ PUBLIC_FILES = (
     "main.py", "desktop.py", "build_windows.py", "replay.py", "selfcheck.py", "build_release.py", "make_support_bundle.py",
     "fisher/__init__.py", "fisher/config.py", "fisher/controller.py", "fisher/runtime.py",
     "fisher/emulators.py", "tests/test_emulators.py", "tests/test_red_result.py", "tests/assets/record_weight_bronze.png",
+    "tests/test_claim_result.py", "tests/assets/claim_button_scaled.png",
     "fisher/contact.py", "fisher/trial_capture.py", "tests/test_contact.py", "tests/test_trial.py", "docs/ALGORITHM.md",
     "fisher/jsonio.py", "tests/test_diagnostics.py", "tests/assets/timing_marker_clear.png", "tests/assets/timing_marker_split.png",
     "tests/test_followup.py", "tests/assets/timing_right_approach.png", "tests/assets/timing_hit_effect.png",

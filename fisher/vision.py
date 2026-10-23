@@ -55,6 +55,26 @@ class Detector:
                 raise ValueError(f"识别模板尺寸错误：{name}")
             self.templates[name] = (template, box, pad)
         self.threshold = threshold
+        # 收下按钮的文字会独立于标题缩放；缓存有限尺寸的白色字形，排除绿色纹理。
+        button = self.templates["claim_button"][0]
+        self.claim_button_masks = tuple(
+            self.white_text(cv2.resize(button, None, fx=scale, fy=scale,
+                                       interpolation=cv2.INTER_AREA))
+            for scale in (1.0, .90, .95, 1.05, 1.10, 1.15)
+        )
+
+    @staticmethod
+    def white_text(image):
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        return cv2.inRange(hsv, (0, 0, 180), (179, 85, 255))
+
+    def match_claim_button(self, img):
+        _, (x1, y1, x2, y2), pad = self.templates["claim_button"]
+        roi = self.white_text(img[max(0, y1-pad):min(H, y2+pad),
+                                  max(0, x1-pad):min(W, x2+pad)])
+        return max(float(cv2.minMaxLoc(cv2.matchTemplate(
+            roi, template, cv2.TM_CCOEFF_NORMED))[1])
+                   for template in self.claim_button_masks)
 
     def match(self, img, name):
         template, (x1, y1, x2, y2), pad = self.templates[name]
@@ -150,9 +170,12 @@ class Detector:
         scores.update(green=green, purple=purple, panel_purple=panel_purple,
                       result_color=result_color, dim=dim, claim_green=claim_green, dark_edges=dark_edges)
         if claim_green > .5 and dark_edges > .65:
-            claim_score = min(score("claim_title"), score("claim_button"))
-            if claim_score >= max(.72, self.threshold):
-                return Observation("RESULT", claim_score, scores=scores, variant="claim"), img
+            claim_threshold = max(.72, self.threshold)
+            if score("claim_title") >= claim_threshold:
+                scores["claim_button"] = self.match_claim_button(img)
+                claim_score = min(scores["claim_title"], scores["claim_button"])
+                if claim_score >= claim_threshold:
+                    return Observation("RESULT", claim_score, scores=scores, variant="claim"), img
         if result_color > .45 and dim < 165 and score("weight") >= self.threshold:
             return Observation("RESULT", score("weight"), scores=scores, variant="record"), img
         if panel_purple > 0.35 and purple > 0.16 and score("bite") >= self.threshold:

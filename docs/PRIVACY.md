@@ -9,7 +9,7 @@
 | `config.example.json` | 默认设置，框选为空 | 包含 |
 | `assets/templates/` | 必要的局部控件图 | 包含 |
 | `docs/images/` | 脱敏操作示例 | 包含 |
-| `tests/assets/` | 只含判定条、重量图标的局部回归素材 | 包含 |
+| `tests/assets/` | 只含判定条、重量图标及收下按钮的局部回归素材 | 包含 |
 | `config.json` | 本机设置、模拟器种类、窗口标题和框选 | 排除 |
 | `speed_profile.json` | 明确完成校准后的比例和统计量 | 排除 |
 | `snapshots/`、`recordings/` | 用户主动截图/录制的文件，可能包含昵称或聊天 | 排除 |
